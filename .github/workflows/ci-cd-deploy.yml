@@ -1,0 +1,137 @@
+name: CI/CD - Build, Push & Deploy (Back-Ventas)
+
+# Trigger: al hacer push en la rama 'deploy'
+on:
+  push:
+    branches:
+      - deploy
+
+env:
+  SERVICE_NAME: back-ventas
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 654654493647.dkr.ecr.us-east-1.amazonaws.com
+  ECR_REPOSITORY: back-venta
+  IMAGE_TAG: latest
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # ─────────────────────────────────────────
+      # 1. Descargar el código del repositorio
+      # ─────────────────────────────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ─────────────────────────────────────────
+      # 2. Configurar AWS credentials
+      # ─────────────────────────────────────────
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ─────────────────────────────────────────
+      # 3. Login en ECR
+      # ─────────────────────────────────────────
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ─────────────────────────────────────────
+      # 4. Configurar Docker Buildx (multi-platform builds)
+      # ─────────────────────────────────────────
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ─────────────────────────────────────────
+      # 5. Build y Push de la imagen Docker a ECR
+      # ─────────────────────────────────────────
+      - name: Build and push Docker image to ECR
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:v${{ github.run_number }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ─────────────────────────────────────────
+      # 6. Deploy a la instancia EC2
+      # Actualiza el contenedor en el servidor
+      # ─────────────────────────────────────────
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            # Variables
+            SERVICE_NAME="back-ventas"
+            ECR_REGISTRY="${{ env.ECR_REGISTRY }}"
+            ECR_REPOSITORY="back-ventas"
+            IMAGE_TAG="latest"
+            IMAGE_NAME="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+            CONTAINER_NAME="back_ventas"
+            AWS_REGION="${{ env.AWS_REGION }}"
+            
+            # Configurar credenciales AWS en EC2 para pull de ECR
+            echo "[*] Configurando credenciales AWS para ECR..."
+            aws configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
+            aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+            aws configure set region $AWS_REGION
+            
+            # Login a ECR desde EC2
+            echo "[*] Autenticando en ECR desde EC2..."
+            aws ecr get-login-password --region $AWS_REGION | \
+              docker login --username AWS --password-stdin $ECR_REGISTRY
+            
+            # Detener el contenedor actual (si existe)
+            echo "[*] Deteniendo contenedor anterior..."
+            docker stop $CONTAINER_NAME 2>/dev/null || true
+            docker rm $CONTAINER_NAME 2>/dev/null || true
+            
+            # Pull de la nueva imagen desde ECR
+            echo "[*] Descargando nueva imagen desde ECR..."
+            docker pull $IMAGE_NAME
+            
+            # Ejecutar el nuevo contenedor
+            echo "[*] Iniciando contenedor..."
+            docker run -d \
+              --name $CONTAINER_NAME \
+              --restart unless-stopped \
+              -p 8082:8082 \
+              -e DB_ENDPOINT=mysql \
+              -e DB_PORT=3306 \
+              -e DB_NAME=${DB_NAME} \
+              -e DB_USERNAME=${DB_USERNAME} \
+              -e DB_PASSWORD=${DB_PASSWORD} \
+              -e SPRING_PROFILES_ACTIVE=prod \
+              $IMAGE_NAME
+            
+            # Verificar que el contenedor está corriendo
+            echo "[*] Verificando estado del contenedor..."
+            docker ps | grep $CONTAINER_NAME
+            
+            echo "[✓] Despliegue completado exitosamente"
+
+      # ─────────────────────────────────────────
+      # 7. Notificación de éxito/fallo
+      # ─────────────────────────────────────────
+      - name: Notify deployment status
+        if: always()
+        run: |
+          if [ ${{ job.status }} == 'success' ]; then
+            echo "✓ Pipeline ejecutado exitosamente"
+            echo "Imagen ECR: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
+            echo "Servicio: ${{ env.SERVICE_NAME }}"
+          else
+            echo "✗ Pipeline falló - Revisar logs"
+          fi
