@@ -37,11 +37,10 @@ ENV SPRING_PROFILES_ACTIVE=prod \
     JAVA_OPTS="-Xms256m -Xmx512m"
 
 # Exponer el puerto del backend
-EXPOSE 8080
+EXPOSE 8082
 
-# Healthcheck apuntando al actuator
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:8080/actuator/health || curl -f http://localhost:8080/ || exit 1
+    CMD curl -f http://localhost:8082/actuator/health || exit 1
 
 # Ejecutar como usuario no root
 USER appuser

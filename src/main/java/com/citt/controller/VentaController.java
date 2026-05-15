@@ -37,7 +37,7 @@ public class VentaController {
 
     @PutMapping("/{idVenta}")
     @Operation(summary = "Actualizar una venta existente", description = "Actualiza los detalles de una venta existente")
-    public ResponseEntity<Venta> actualizarVenta(@Valid @PathVariable Long idVenta, @RequestBody Venta venta) throws VentaNotFoundException {
+    public ResponseEntity<Venta> actualizarVenta(@PathVariable Long idVenta, @Valid @RequestBody Venta venta) throws VentaNotFoundException {
         Venta ventaActualizada = ventaService.updateVenta(idVenta, venta);
         return ResponseEntity.ok(ventaActualizada);
     }
